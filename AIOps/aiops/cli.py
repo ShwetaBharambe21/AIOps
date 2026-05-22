@@ -339,6 +339,13 @@ def watch(
 
 
 @app.command()
+def chat():
+    """[bold cyan]Chat[/bold cyan] — conversational AI assistant, just type in plain English."""
+    from .chat import run_chat
+    run_chat()
+
+
+@app.command()
 def status():
     """[bold cyan]Status[/bold cyan] — show a quick cluster health overview."""
     cluster = _cluster_name()
