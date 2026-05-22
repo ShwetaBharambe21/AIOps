@@ -49,11 +49,11 @@ def _print_anomaly_table(anomalies: list[Anomaly]) -> None:
         return
 
     table = Table(title="Detected Anomalies", show_lines=True, expand=False)
-    table.add_column("Severity", width=12)
-    table.add_column("Type", width=24)
-    table.add_column("Namespace", width=18)
-    table.add_column("Resource", width=30)
-    table.add_column("Details", width=52)
+    table.add_column("Severity", min_width=10, max_width=12, no_wrap=True)
+    table.add_column("Type", min_width=12, max_width=20)
+    table.add_column("Namespace", min_width=7, max_width=14)
+    table.add_column("Resource", min_width=12, max_width=24)
+    table.add_column("Details", min_width=10, max_width=44)
 
     for a in anomalies:
         icon = _SEVERITY_ICON.get(a.severity.value, "")
