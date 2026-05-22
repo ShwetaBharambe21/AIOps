@@ -6,6 +6,7 @@ AI-powered Kubernetes anomaly detection and incident response CLI, backed by **G
 
 | Feature | Description |
 |---------|-------------|
+| **Conversational Chat** | Plain-English REPL — just describe what you need, Gemma 4 figures out the rest |
 | **Anomaly Detection** | Rule-based scan across pods, nodes, deployments — no LLM latency |
 | **Root Cause Analysis** | Gemma 4 analyzes logs + events to explain *why* something broke |
 | **Fix Generation** | Actionable `kubectl` commands tailored to each detected issue |
@@ -45,6 +46,30 @@ python main.py [COMMAND] [OPTIONS]
 ```
 
 ### Commands
+
+#### `chat` — Conversational assistant ⭐
+
+The easiest way to use AIOps. Just type in plain English — no flags to remember.
+
+```bash
+python main.py chat
+```
+
+Then talk to it naturally:
+
+```
+You> what's wrong with my cluster?
+You> why is the frontend pod crashing?
+You> fix broken-app-7589c9dfd4-w6wnb
+You> show me a health overview
+You> generate sop documents
+You> deep analyze everything
+You> exit
+```
+
+Gemma 4 parses your intent, picks the right action (scan / analyze / fix / status / sop / watch), and runs it. Conversation history is maintained across turns so follow-up questions work naturally.
+
+---
 
 #### `scan` — Detect anomalies
 
@@ -133,6 +158,7 @@ python main.py status
 main.py                 ← entry point
 aiops/
   cli.py                ← Typer CLI commands
+  chat.py               ← conversational REPL (plain-English interface)
   collector.py          ← kubectl wrappers (raw data collection)
   detector.py           ← rule-based anomaly detection (no LLM)
   agent.py              ← LangGraph ReAct agent + direct LLM calls (Gemma 4)
