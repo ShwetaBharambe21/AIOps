@@ -20,6 +20,9 @@ SOP_TITLES = {
     AnomalyType.RESOURCE_PRESSURE: "Addressing Node Resource Pressure",
     AnomalyType.FAILED_SCHEDULING: "Fixing Failed Pod Scheduling",
     AnomalyType.EVICTED_POD: "Handling Evicted Pods",
+    AnomalyType.PVC_UNBOUND: "Resolving Unbound PersistentVolumeClaims",
+    AnomalyType.PVC_PENDING: "Resolving Pending PersistentVolumeClaims",
+    AnomalyType.JOB_FAILED: "Recovering Failed Kubernetes Jobs",
     AnomalyType.UNKNOWN: "Kubernetes Unknown Pod Failure Investigation",
 }
 

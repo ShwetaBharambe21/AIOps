@@ -11,7 +11,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.prompt import Prompt
 from rich.table import Table
 
-from .agent import generate_rca_from_data, generate_solution, run_full_analysis
+from .agent import generate_rca_from_data, generate_report, generate_solution, run_full_analysis
 from .collector import (
     describe_pod,
     get_current_context,
@@ -21,7 +21,8 @@ from .collector import (
     get_pods,
     get_pods_json,
 )
-from .detector import detect_pod_anomalies, run_detection
+from .detector import detect_pod_anomalies, run_detection, run_docker_detection
+from .docker_collector import get_container_logs, get_all_containers, get_running_containers, is_docker_available
 from .models import Anomaly, AnomalyType, Severity
 from .sop import generate_index_readme, generate_sop_content, save_sop
 
@@ -39,6 +40,10 @@ Available intents:
   analyze       – AI root cause analysis ("analyze", "why", "root cause", "explain")
   analyze_deep  – deep ReAct agent analysis ("deep", "thorough", "full investigation")
   fix           – remediation for a pod ("fix", "repair", "remediate", "how to fix")
+  triage        – show only critical issues ("triage", "critical only", "urgent", "p0", "what's on fire")
+  report        – generate full incident report ("report", "incident report", "full report", "generate report")
+  docker_scan   – scan Docker containers for anomalies ("docker", "containers", "docker scan", "check docker")
+  docker_fix    – fix a Docker container ("docker fix", "fix container", "repair container")
   status        – quick cluster overview ("status", "health", "overview", "how is the cluster")
   sop           – generate SOP documents ("sop", "runbook", "document", "procedure")
   watch         – continuous monitoring ("watch", "monitor continuously", "keep checking")
@@ -61,9 +66,13 @@ _WELCOME = """\
 Hi Shweta! I'm your AIOps assistant. Just tell me what you need in plain English.
 
   [cyan]scan / check[/cyan]          detect cluster anomalies
+  [cyan]triage[/cyan]                show only CRITICAL issues
+  [cyan]docker scan[/cyan]           scan Docker containers for anomalies
+  [cyan]docker fix <name>[/cyan]     AI fix for a Docker container
   [cyan]analyze[/cyan]               AI root cause analysis
   [cyan]deep analyze[/cyan]          thorough ReAct agent investigation
   [cyan]fix <pod>[/cyan]             generate remediation steps for a pod
+  [cyan]report[/cyan]                generate full incident report (saved to docs/)
   [cyan]status / health[/cyan]       quick cluster overview
   [cyan]sop[/cyan]                   generate SOP runbooks
   [cyan]watch[/cyan]                 continuous monitoring (Ctrl-C to stop)
@@ -110,10 +119,18 @@ def _keyword_fallback(text: str) -> Dict:
         return _resp("analyze_deep", "Sure Shweta, starting a deep investigation now!")
     if any(w in lo for w in ["analyz", "rca", "root cause", "why"]):
         return _resp("analyze", "On it, Shweta — running root cause analysis!")
+    if any(w in lo for w in ["triage", "critical only", "urgent", "on fire", "p0"]):
+        return _resp("triage", "Triaging critical issues now, Shweta!")
+    if any(w in lo for w in ["docker fix", "fix container", "repair container"]):
+        return _resp("docker_fix", "Let me investigate that container for you, Shweta!")
+    if any(w in lo for w in ["docker", "container", "docker scan"]):
+        return _resp("docker_scan", "Scanning your Docker containers, Shweta!")
     if any(w in lo for w in ["scan", "detect", "check", "wrong", "issue", "problem", "anomal"]):
         return _resp("scan", "Scanning your cluster now, Shweta!")
     if any(w in lo for w in ["fix", "repair", "remediat", "resolv"]):
         return _resp("fix", "Let me generate a fix for that, Shweta!")
+    if any(w in lo for w in ["report", "incident report", "full report"]):
+        return _resp("report", "Generating a full incident report for you, Shweta!")
     if any(w in lo for w in ["status", "health", "overview", "how's", "hows"]):
         return _resp("status", "Pulling up your cluster status, Shweta!")
     if any(w in lo for w in ["sop", "runbook", "document", "procedure"]):
@@ -293,8 +310,10 @@ def _do_sop(cluster: str) -> str:
 
         sop_files: list = []
         for a in sop_anomalies:
+            p.update(t, description=f"Generating solution: {a.type.value}…")
+            solution = generate_solution(a)
             p.update(t, description=f"Writing SOP: {a.type.value}…")
-            content  = generate_sop_content(a, root_cause=rca[:1500], solution=f"Fix for {a.type.value}")
+            content  = generate_sop_content(a, root_cause=rca[:1500], solution=solution[:1500])
             filepath = save_sop(content, a.type, docs_dir)
             sop_files.append(filepath)
             console.print(f"  [green]✓[/green] {filepath}")
@@ -305,6 +324,117 @@ def _do_sop(cluster: str) -> str:
 
     console.print(f"\n[bold green]✅ {len(sop_files)} SOP(s) written to {docs_dir}/[/bold green]")
     return f"Generated {len(sop_files)} SOPs"
+
+
+def _do_docker_scan(cluster: str) -> str:
+    if not is_docker_available():
+        console.print("[red]Docker daemon is not reachable. Is Docker running?[/red]")
+        return "Docker unavailable"
+
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as p:
+        t = p.add_task("Scanning Docker containers…", total=None)
+        anomalies = run_docker_detection()
+        containers_text = get_all_containers()
+        p.remove_task(t)
+
+    console.print(Panel(containers_text or "No containers found",
+                        title="[bold]Docker Containers[/bold]", border_style="magenta"))
+    if anomalies:
+        _anomaly_table(anomalies)
+        return f"Found {len(anomalies)} Docker anomalie(s)"
+    console.print("[bold green]✅ No Docker container anomalies detected.[/bold green]")
+    return "No Docker anomalies"
+
+
+def _do_docker_fix(cluster: str, container_name: Optional[str]) -> str:
+    if not container_name:
+        console.print("[yellow]Which container should I fix, Shweta? "
+                      "Mention the container name, e.g. [bold]docker fix my-app[/bold][/yellow]")
+        return "Needs container name"
+
+    if not is_docker_available():
+        console.print("[red]Docker daemon is not reachable.[/red]")
+        return "Docker unavailable"
+
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as p:
+        t = p.add_task(f"Gathering info for container {container_name}…", total=None)
+        logs = get_container_logs(container_name)
+        from .collector import describe_pod as _noop  # noqa — keep imports tidy
+        from .agent import generate_solution
+        anomaly = Anomaly(
+            id="docker-chat",
+            severity=Severity.WARNING,
+            type=AnomalyType.UNKNOWN,
+            resource=container_name,
+            namespace="docker",
+            message="Docker container investigation requested",
+        )
+        p.update(t, description="Generating fix with Gemma 4…")
+        solution = generate_solution(anomaly, pod_description="", logs=logs[:2000])
+        p.remove_task(t)
+
+    console.print(Panel(
+        Markdown(solution),
+        title=f"[bold]Fix Recommendations: {container_name}[/bold]",
+        border_style="green",
+    ))
+    return f"Fix generated for {container_name}"
+
+
+def _do_triage(cluster: str) -> str:
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as p:
+        t = p.add_task("Scanning for critical issues…", total=None)
+        anomalies = run_detection()
+        p.remove_task(t)
+
+    critical = [a for a in anomalies if a.severity == Severity.CRITICAL]
+    if not critical:
+        console.print("[bold green]✅ No critical issues — cluster looks healthy![/bold green]")
+        if anomalies:
+            console.print(f"[yellow]{len(anomalies)} warning(s) detected — say 'scan' to see them.[/yellow]")
+        return "No critical issues"
+
+    _anomaly_table(critical)
+    console.print(f"\n[bold red]⚠  {len(critical)} CRITICAL issue(s) require immediate attention![/bold red]")
+    return f"{len(critical)} critical issues"
+
+
+def _do_report(cluster: str) -> str:
+    import os
+    from datetime import datetime as _dt
+
+    docs_dir = "docs"
+    timestamp = _dt.now().strftime("%Y-%m-%d-%H-%M")
+    outfile = os.path.join(docs_dir, f"incident-report-{timestamp}.md")
+
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as p:
+        t = p.add_task("Detecting anomalies…", total=None)
+        anomalies = run_detection()
+
+        p.update(t, description="Fetching warning events…")
+        events = get_events()
+
+        logs_by_pod: dict = {}
+        for a in anomalies[:5]:
+            if a.namespace != "cluster":
+                p.update(t, description=f"Fetching logs: {a.namespace}/{a.resource}…")
+                logs = get_pod_logs(a.resource, a.namespace)
+                if not logs.startswith("ERROR"):
+                    logs_by_pod[f"{a.namespace}/{a.resource}"] = logs
+
+        p.update(t, description="Generating incident report with Gemma 4…")
+        content = generate_report(cluster, anomalies, events, logs_by_pod)
+        p.remove_task(t)
+
+    os.makedirs(docs_dir, exist_ok=True)
+    with open(outfile, "w") as f:
+        f.write(content)
+
+    _anomaly_table(anomalies)
+    console.print(f"\n[bold green]✅ Incident report saved:[/bold green] [white]{outfile}[/white]")
+    preview = content[:1500] + "\n\n*(truncated — see full report)*" if len(content) > 1500 else content
+    console.print(Panel(Markdown(preview), title="[bold]Report Preview[/bold]", border_style="cyan"))
+    return f"Report saved to {outfile}"
 
 
 def _do_watch(cluster: str, interval: int = 30) -> None:
@@ -386,6 +516,14 @@ def run_chat() -> None:
                 result = _do_analyze_deep(cluster)
             elif intent == "fix":
                 result = _do_fix(cluster, pod_name, namespace)
+            elif intent == "docker_scan":
+                result = _do_docker_scan(cluster)
+            elif intent == "docker_fix":
+                result = _do_docker_fix(cluster, pod_name)
+            elif intent == "triage":
+                result = _do_triage(cluster)
+            elif intent == "report":
+                result = _do_report(cluster)
             elif intent == "status":
                 result = _do_status(cluster)
             elif intent == "sop":

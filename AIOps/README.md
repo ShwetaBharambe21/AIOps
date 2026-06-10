@@ -7,10 +7,12 @@ AI-powered Kubernetes anomaly detection and incident response CLI, backed by **G
 | Feature | Description |
 |---------|-------------|
 | **Conversational Chat** | Plain-English REPL — just describe what you need, Gemma 4 figures out the rest |
-| **Anomaly Detection** | Rule-based scan across pods, nodes, deployments — no LLM latency |
+| **Anomaly Detection** | Rule-based scan across pods, nodes, deployments, PVCs, and Jobs — no LLM latency |
+| **Triage Mode** | Instantly surface only CRITICAL issues for immediate action |
 | **Root Cause Analysis** | Gemma 4 analyzes logs + events to explain *why* something broke |
 | **Fix Generation** | Actionable `kubectl` commands tailored to each detected issue |
-| **SOP Documents** | Auto-generated Markdown runbooks saved to `docs/` |
+| **Incident Reports** | Full Markdown incident report with RCA, health score, and remediation plan |
+| **SOP Documents** | AI-generated Markdown runbooks (with real per-issue solutions) saved to `docs/` |
 | **Continuous Monitoring** | `watch` mode polls the cluster and alerts on new anomalies |
 | **Deep Agent Mode** | ReAct agent uses live k8s tools to self-investigate the cluster |
 
@@ -59,8 +61,10 @@ Then talk to it naturally:
 
 ```
 You> what's wrong with my cluster?
+You> triage — show me only the critical issues
 You> why is the frontend pod crashing?
 You> fix broken-app-7589c9dfd4-w6wnb
+You> generate an incident report
 You> show me a health overview
 You> generate sop documents
 You> deep analyze everything
@@ -121,6 +125,30 @@ python main.py sop --all --docs-dir ./runbooks
 
 Generated files land in `docs/` (or `--docs-dir`). A `README.md` index is always created.
 
+#### `triage` — Critical issues only
+
+```bash
+python main.py triage
+python main.py triage --namespace production
+```
+
+Shows only CRITICAL anomalies — no warnings, no LLM latency. Use this as your first check during an incident.
+
+#### `report` — Full incident report
+
+```bash
+# Generate report to docs/incident-report-<timestamp>.md
+python main.py report
+
+# Custom output file
+python main.py report --out /tmp/my-report.md
+
+# Custom docs directory
+python main.py report --docs-dir ./reports
+```
+
+Generates a complete Markdown incident report containing: Executive Summary · Health Score · Anomaly Inventory · Per-issue RCA with evidence · Prioritised Remediation Plan (P0/P1/P2) · Risk Assessment. Powered by Gemma 4.
+
 #### `watch` — Continuous monitoring
 
 ```bash
@@ -151,21 +179,24 @@ python main.py status
 | `ContainerStuck` | WARNING | Stuck in ContainerCreating |
 | `ResourcePressure` | WARNING | Node memory/disk/PID pressure |
 | `EvictedPod` | WARNING | Pod was evicted |
+| `PVCUnbound` | CRITICAL | PersistentVolumeClaim not Bound |
+| `PVCPending` | WARNING | PersistentVolumeClaim stuck in Pending |
+| `JobFailed` | CRITICAL | Kubernetes Job failed (backoff limit exceeded) |
 
 ## Architecture
 
 ```
 main.py                 ← entry point
 aiops/
-  cli.py                ← Typer CLI commands
+  cli.py                ← Typer CLI commands (scan, triage, analyze, fix, report, sop, watch, chat, status)
   chat.py               ← conversational REPL (plain-English interface)
-  collector.py          ← kubectl wrappers (raw data collection)
-  detector.py           ← rule-based anomaly detection (no LLM)
-  agent.py              ← LangGraph ReAct agent + direct LLM calls (Gemma 4)
+  collector.py          ← kubectl wrappers (pods, nodes, deployments, PVCs, Jobs, events, logs)
+  detector.py           ← rule-based anomaly detection (no LLM) — pods, nodes, deployments, PVCs, Jobs
+  agent.py              ← LangGraph ReAct agent + direct LLM calls (Gemma 4) — RCA, fix, report generation
   sop.py                ← SOP markdown generation + file writing
-  models.py             ← Pydantic data models (Anomaly, Severity, etc.)
-  prompts.py            ← LLM prompt templates
-docs/                   ← generated SOP markdown files land here
+  models.py             ← Pydantic data models (Anomaly, Severity, AnomalyType, etc.)
+  prompts.py            ← LLM prompt templates (RCA, solution, SOP, full incident report)
+docs/                   ← generated SOP + incident report Markdown files land here
 ```
 
 ### AI Stack

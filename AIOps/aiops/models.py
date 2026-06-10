@@ -22,6 +22,9 @@ class AnomalyType(str, Enum):
     RESOURCE_PRESSURE = "ResourcePressure"
     FAILED_SCHEDULING = "FailedScheduling"
     EVICTED_POD = "EvictedPod"
+    PVC_UNBOUND = "PVCUnbound"
+    PVC_PENDING = "PVCPending"
+    JOB_FAILED = "JobFailed"
     UNKNOWN = "Unknown"
 
 

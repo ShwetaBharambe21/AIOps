@@ -157,6 +157,49 @@ def describe_pod(pod_name: str, namespace: str) -> str:
     return stdout if rc == 0 else f"ERROR: {stderr}"
 
 
+def get_pvcs(namespace: str = "--all-namespaces") -> str:
+    """Get PersistentVolumeClaims with status."""
+    args = ["get", "pvc", "-o", "wide", "--no-headers"]
+    if namespace == "--all-namespaces":
+        args.insert(2, "-A")
+    else:
+        args.extend(["-n", namespace])
+    stdout, stderr, rc = run_kubectl(args)
+    return stdout if rc == 0 else f"ERROR: {stderr}"
+
+
+def get_pvcs_json(namespace: str = "--all-namespaces") -> dict:
+    """Get PersistentVolumeClaims as JSON."""
+    args = ["get", "pvc", "-o", "json"]
+    if namespace == "--all-namespaces":
+        args.insert(2, "-A")
+    else:
+        args.extend(["-n", namespace])
+    stdout, _, rc = run_kubectl(args)
+    if rc != 0:
+        return {}
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError:
+        return {}
+
+
+def get_jobs_json(namespace: str = "--all-namespaces") -> dict:
+    """Get Jobs as JSON."""
+    args = ["get", "jobs", "-o", "json"]
+    if namespace == "--all-namespaces":
+        args.insert(2, "-A")
+    else:
+        args.extend(["-n", namespace])
+    stdout, _, rc = run_kubectl(args)
+    if rc != 0:
+        return {}
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError:
+        return {}
+
+
 def get_current_context() -> str:
     """Get current kubectl context name."""
     stdout, stderr, rc = run_kubectl(["config", "current-context"])

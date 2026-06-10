@@ -18,9 +18,13 @@ from .collector import (
     get_pods,
     get_pods_json,
 )
-from .detector import detect_pod_anomalies, run_detection
+from .detector import detect_pod_anomalies, run_detection, run_docker_detection
+from .docker_collector import (
+    get_running_containers, get_all_containers, get_container_logs,
+    get_docker_stats, get_container_inspect, is_docker_available,
+)
 from .models import Anomaly, AnomalyType, Severity
-from .agent import generate_rca_from_data, generate_solution, run_full_analysis
+from .agent import generate_rca_from_data, generate_report, generate_solution, run_full_analysis
 from .sop import generate_index_readme, generate_sop_content, save_sop
 
 app = typer.Typer(
@@ -271,8 +275,10 @@ def sop(
 
         sop_files: list[str] = []
         for a in sop_anomalies:
+            p.update(t, description=f"Generating solution: {a.type.value} …")
+            solution = generate_solution(a)
             p.update(t, description=f"Writing SOP: {a.type.value} …")
-            content = generate_sop_content(a, root_cause=rca[:1500], solution=f"Fix for {a.type.value}")
+            content = generate_sop_content(a, root_cause=rca[:1500], solution=solution[:1500])
             filepath = save_sop(content, a.type, docs_dir)
             sop_files.append(filepath)
             console.print(f"  [green]✓[/green] {filepath}")
@@ -343,6 +349,156 @@ def chat():
     """[bold cyan]Chat[/bold cyan] — conversational AI assistant, just type in plain English."""
     from .chat import run_chat
     run_chat()
+
+
+@app.command()
+def triage(
+    namespace: Optional[str] = typer.Option(None, "--namespace", "-n", help="Limit to one namespace"),
+):
+    """[bold red]Triage[/bold red] — show only CRITICAL anomalies for immediate action."""
+    cluster = _cluster_name()
+    console.print(Panel(
+        f"[bold red]Triage:[/bold red] [white]{cluster}[/white]",
+        subtitle="AIOps · Critical Issues Only",
+    ))
+
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as p:
+        t = p.add_task("Scanning for critical issues …", total=None)
+        anomalies = run_detection()
+        p.remove_task(t)
+
+    critical = [a for a in anomalies if a.severity == Severity.CRITICAL]
+
+    if not critical:
+        console.print("[bold green]✅ No critical issues detected.[/bold green]")
+        if anomalies:
+            console.print(f"[yellow]{len(anomalies)} warning(s) present — run [bold]scan[/bold] to view them.[/yellow]")
+        return
+
+    _print_anomaly_table(critical)
+    console.print(f"\n[bold red]⚠  {len(critical)} CRITICAL issue(s) require immediate attention![/bold red]")
+    console.print("[dim]Run [bold]fix <pod>[/bold] or [bold]analyze[/bold] for remediation steps.[/dim]")
+
+
+@app.command()
+def report(
+    out: Optional[str] = typer.Option(None, "--out", "-o", help="Output file path (default: docs/incident-report-<timestamp>.md)"),
+    docs_dir: str = typer.Option("docs", "--docs-dir", help="Directory to write the report"),
+):
+    """[bold cyan]Report[/bold cyan] — generate a full Markdown incident report with RCA and remediation plan."""
+    import os
+    from datetime import datetime as _dt
+
+    cluster = _cluster_name()
+    timestamp = _dt.now().strftime("%Y-%m-%d-%H-%M")
+    outfile = out or os.path.join(docs_dir, f"incident-report-{timestamp}.md")
+
+    console.print(Panel(
+        f"[bold cyan]Incident Report:[/bold cyan] [white]{cluster}[/white]\n"
+        f"[dim]Output: {outfile}[/dim]",
+        subtitle="AIOps · Incident Report",
+    ))
+
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as p:
+        t = p.add_task("Detecting anomalies …", total=None)
+        anomalies = run_detection()
+
+        p.update(t, description="Fetching warning events …")
+        events = get_events()
+
+        logs_by_pod: dict = {}
+        for a in anomalies[:5]:
+            if a.namespace != "cluster":
+                p.update(t, description=f"Fetching logs: {a.namespace}/{a.resource} …")
+                logs = get_pod_logs(a.resource, a.namespace)
+                if not logs.startswith("ERROR"):
+                    logs_by_pod[f"{a.namespace}/{a.resource}"] = logs
+
+        p.update(t, description="Generating incident report with Gemma 4 …")
+        content = generate_report(cluster, anomalies, events, logs_by_pod)
+        p.remove_task(t)
+
+    os.makedirs(docs_dir, exist_ok=True)
+    with open(outfile, "w") as f:
+        f.write(content)
+
+    _print_anomaly_table(anomalies)
+    console.print(f"\n[bold green]✅ Incident report written to:[/bold green] [white]{outfile}[/white]")
+    console.print(Panel(Markdown(content[:2000] + "\n\n*(truncated — see full report)*" if len(content) > 2000 else content),
+                        title="[bold]Report Preview[/bold]", border_style="cyan"))
+
+
+@app.command(name="docker-scan")
+def docker_scan(
+    logs: bool = typer.Option(False, "--logs", "-l", help="Show recent logs for unhealthy containers"),
+    all_containers: bool = typer.Option(False, "--all", "-a", help="Show all containers, not just anomalies"),
+):
+    """[bold magenta]Docker-scan[/bold magenta] — detect anomalies in local Docker containers."""
+    console.print(Panel(
+        "[bold magenta]Docker Container Scan[/bold magenta]",
+        subtitle="AIOps · Docker Anomaly Detection",
+    ))
+
+    if not is_docker_available():
+        console.print("[red]Docker daemon is not reachable. Is Docker running?[/red]")
+        raise typer.Exit(1)
+
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as p:
+        t = p.add_task("Scanning Docker containers …", total=None)
+        anomalies = run_docker_detection()
+        containers_text = get_all_containers() if all_containers else get_running_containers()
+        p.remove_task(t)
+
+    console.print(Panel(containers_text or "No containers found",
+                        title="[bold]Containers[/bold]", border_style="magenta"))
+
+    if anomalies:
+        _print_anomaly_table(anomalies)
+        if logs:
+            for a in anomalies[:3]:
+                console.print(f"\n[bold magenta]Logs: {a.resource}[/bold magenta]")
+                log_output = get_container_logs(a.resource)
+                console.print(Panel(log_output or "(no logs)", border_style="dim"))
+    else:
+        console.print("[bold green]✅ No Docker container anomalies detected.[/bold green]")
+
+
+@app.command(name="docker-fix")
+def docker_fix(
+    container: str = typer.Argument(..., help="Container name or ID to investigate"),
+):
+    """[bold magenta]Docker-fix[/bold magenta] — generate AI remediation steps for a Docker container."""
+    console.print(Panel(
+        f"[bold magenta]Generating fix for container:[/bold magenta] [white]{container}[/white]",
+        subtitle="AIOps · Docker Fix Generator",
+    ))
+
+    if not is_docker_available():
+        console.print("[red]Docker daemon is not reachable.[/red]")
+        raise typer.Exit(1)
+
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as p:
+        t = p.add_task("Gathering container information …", total=None)
+        logs = get_container_logs(container)
+        inspect = get_container_inspect(container)
+        anomaly = Anomaly(
+            id="docker-manual",
+            severity=Severity.WARNING,
+            type=AnomalyType.UNKNOWN,
+            resource=container,
+            namespace="docker",
+            message="Docker container investigation requested",
+        )
+        p.update(t, description="Querying Gemma 4 for fix …")
+        from .agent import generate_solution
+        solution = generate_solution(anomaly, pod_description=inspect[:2000], logs=logs[:2000])
+        p.remove_task(t)
+
+    console.print(Panel(
+        Markdown(solution),
+        title=f"[bold]Fix Recommendations: {container}[/bold]",
+        border_style="green",
+    ))
 
 
 @app.command()

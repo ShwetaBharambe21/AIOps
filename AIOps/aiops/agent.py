@@ -8,8 +8,12 @@ from .collector import (
     get_pods, get_events, get_pod_logs, get_nodes,
     get_deployments, get_resource_metrics, describe_pod,
 )
+from .docker_collector import (
+    get_running_containers, get_all_containers,
+    get_container_logs, get_docker_stats,
+)
 from .models import Anomaly
-from .prompts import SYSTEM_PROMPT, RCA_PROMPT_TEMPLATE, SOLUTION_PROMPT_TEMPLATE
+from .prompts import SYSTEM_PROMPT, RCA_PROMPT_TEMPLATE, SOLUTION_PROMPT_TEMPLATE, REPORT_PROMPT_TEMPLATE
 
 
 def _build_llm(temperature: float = 0.3) -> ChatOllama:
@@ -84,13 +88,55 @@ K8S_TOOLS = [
 
 
 # --------------------------------------------------------------------------
+# Docker tools exposed to the ReAct agent
+# --------------------------------------------------------------------------
+
+@tool
+def docker_get_running_containers() -> str:
+    """List all currently running Docker containers with their status and ports."""
+    return get_running_containers()
+
+
+@tool
+def docker_get_all_containers() -> str:
+    """List all Docker containers including stopped, exited, and paused ones."""
+    return get_all_containers()
+
+
+@tool
+def docker_get_container_logs(container_name: str) -> str:
+    """Get recent logs from a specific Docker container.
+
+    Args:
+        container_name: Name or ID of the Docker container.
+    """
+    return get_container_logs(container_name)
+
+
+@tool
+def docker_get_stats() -> str:
+    """Get a snapshot of CPU and memory usage for all running Docker containers."""
+    return get_docker_stats()
+
+
+DOCKER_TOOLS = [
+    docker_get_running_containers,
+    docker_get_all_containers,
+    docker_get_container_logs,
+    docker_get_stats,
+]
+
+ALL_TOOLS = K8S_TOOLS + DOCKER_TOOLS
+
+
+# --------------------------------------------------------------------------
 # Public analysis functions
 # --------------------------------------------------------------------------
 
 def run_full_analysis(cluster_name: str) -> dict:
     """Run comprehensive cluster health analysis using a ReAct agent with k8s tools."""
     llm = _build_llm()
-    agent = create_react_agent(llm, K8S_TOOLS, prompt=SYSTEM_PROMPT)
+    agent = create_react_agent(llm, ALL_TOOLS, prompt=SYSTEM_PROMPT)
 
     user_message = f"""Perform a comprehensive health check of Kubernetes cluster '{cluster_name}'.
 
@@ -149,6 +195,40 @@ def generate_rca_from_data(
 
     prompt = RCA_PROMPT_TEMPLATE.format(
         cluster_name=cluster_name,
+        anomalies_text=anomalies_text,
+        events_text=(events_text or "No warning events")[:3000],
+        logs_text=(logs_text or "No logs available")[:4000],
+    )
+
+    response = llm.invoke([
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ])
+    return response.content
+
+
+def generate_report(
+    cluster_name: str,
+    anomalies: List[Anomaly],
+    events_text: str,
+    logs_by_pod: dict,
+) -> str:
+    """Generate a full Markdown incident report from pre-collected cluster data."""
+    llm = _build_llm(temperature=0.2)
+
+    anomalies_text = "\n".join(
+        f"[{a.severity.value}] {a.type.value} | {a.namespace}/{a.resource}\n  → {a.message}"
+        + (f"\n  → Restart count: {a.restart_count}" if a.restart_count else "")
+        for a in anomalies
+    ) or "No anomalies detected — cluster appears healthy."
+
+    logs_text = ""
+    for pod_key, logs in logs_by_pod.items():
+        logs_text += f"\n--- {pod_key} ---\n{logs[:1500]}\n"
+
+    prompt = REPORT_PROMPT_TEMPLATE.format(
+        cluster_name=cluster_name,
+        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         anomalies_text=anomalies_text,
         events_text=(events_text or "No warning events")[:3000],
         logs_text=(logs_text or "No logs available")[:4000],
